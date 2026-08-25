@@ -1,6 +1,7 @@
 package com.example.babymonitor
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
@@ -25,6 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChildCare
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -35,15 +37,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,10 +76,17 @@ class MainActivity : ComponentActivity() {
         setContent {
             BabyMonitorTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    BabyMonitorScreen(
+                    BabyMonitorApp(
+                        context = this,
                         initialPhone = prefs.getString("phone", "") ?: "",
+                        initialThreshold = prefs.getFloat("threshold", 70f),
+                        initialDuration = prefs.getFloat("duration_sec", 5f),
                         onStart = { phone, threshold, durationSec ->
-                            prefs.edit().putString("phone", phone).apply()
+                            prefs.edit()
+                                .putString("phone", phone)
+                                .putFloat("threshold", threshold.toFloat())
+                                .putFloat("duration_sec", durationSec.toFloat())
+                                .apply()
                             startMonitorService(phone, threshold, durationSec)
                         },
                         onStop = { stopMonitorService() }
@@ -116,16 +128,61 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Top-level screen: a simple two-tab layout - live Monitor and Sleep History. */
+@Composable
+fun BabyMonitorApp(
+    context: Context,
+    initialPhone: String,
+    initialThreshold: Float,
+    initialDuration: Float,
+    onStart: (phone: String, thresholdDb: Double, durationSec: Int) -> Unit,
+    onStop: () -> Unit
+) {
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val titles = listOf("ניטור", "היסטוריה")
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        TabRow(selectedTabIndex = selectedTab) {
+            titles.forEachIndexed { index, title ->
+                Tab(
+                    selected = selectedTab == index,
+                    onClick = { selectedTab = index },
+                    text = { Text(title) },
+                    icon = {
+                        Icon(
+                            imageVector = if (index == 0) Icons.Filled.GraphicEq else Icons.Filled.History,
+                            contentDescription = null
+                        )
+                    }
+                )
+            }
+        }
+
+        when (selectedTab) {
+            0 -> BabyMonitorScreen(
+                initialPhone = initialPhone,
+                initialThreshold = initialThreshold,
+                initialDuration = initialDuration,
+                onStart = onStart,
+                onStop = onStop
+            )
+            1 -> HistoryScreen(context = context)
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BabyMonitorScreen(
     initialPhone: String,
+    initialThreshold: Float,
+    initialDuration: Float,
     onStart: (phone: String, thresholdDb: Double, durationSec: Int) -> Unit,
     onStop: () -> Unit
 ) {
     var phoneNumber by remember { mutableStateOf(initialPhone) }
-    var threshold by remember { mutableFloatStateOf(70f) }
-    var durationSec by remember { mutableFloatStateOf(5f) }
+    var threshold by remember { mutableFloatStateOf(initialThreshold) }
+    var durationSec by remember { mutableFloatStateOf(initialDuration) }
 
     val isRunning by MonitorState.isRunning.collectAsState()
     val statusText by MonitorState.statusText.collectAsState()
@@ -139,7 +196,7 @@ fun BabyMonitorScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Top
     ) {
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
         Box(
             modifier = Modifier
@@ -207,7 +264,7 @@ fun BabyMonitorScreen(
             enabled = !isRunning
         )
 
-        Spacer(modifier = Modifier.height(40.dp))
+        Spacer(modifier = Modifier.height(32.dp))
 
         Button(
             onClick = {
