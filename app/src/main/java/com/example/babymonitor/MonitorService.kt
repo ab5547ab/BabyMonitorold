@@ -18,6 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.log10
 import kotlin.math.sqrt
 
@@ -52,6 +53,7 @@ class MonitorService : Service() {
     private var thresholdDb: Double = 70.0
     private var requiredDurationMs: Long = 5_000L
     private var lastCallTime: Long = 0L
+    private var sessionId: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -77,6 +79,10 @@ class MonitorService : Service() {
 
         MonitorState.isRunning.value = true
         MonitorState.statusText.value = "מאזין בבטחה ברקע..."
+
+        if (sessionId == null) {
+            sessionId = HistoryRepository.startSession(applicationContext, phoneNumber)
+        }
 
         startListening()
         return START_STICKY
@@ -119,6 +125,8 @@ class MonitorService : Service() {
             audioRecord.startRecording()
 
             var loudSince = -1L
+            var peakDbInPeriod = 0.0
+            var callTriggeredThisPeriod = false
 
             try {
                 while (true) {
@@ -129,17 +137,30 @@ class MonitorService : Service() {
 
                         val now = System.currentTimeMillis()
                         if (db >= thresholdDb) {
-                            if (loudSince < 0) loudSince = now
+                            if (loudSince < 0) {
+                                loudSince = now
+                                peakDbInPeriod = db
+                                callTriggeredThisPeriod = false
+                            }
+                            if (db > peakDbInPeriod) peakDbInPeriod = db
+
                             val elapsedSec = (now - loudSince) / 1000
                             val requiredSec = requiredDurationMs / 1000
                             MonitorState.statusText.value = "מזהה רעש! ($elapsedSec/$requiredSec שנ')"
 
-                            if (now - loudSince >= requiredDurationMs) {
+                            if (!callTriggeredThisPeriod && now - loudSince >= requiredDurationMs) {
+                                callTriggeredThisPeriod = true
                                 triggerCall()
-                                loudSince = -1L
                             }
-                        } else {
+                        } else if (loudSince >= 0) {
+                            // The loud period just ended - log it as a cry event if it
+                            // lasted long enough to have crossed the detection threshold.
+                            val totalDurationMs = now - loudSince
+                            if (totalDurationMs >= requiredDurationMs) {
+                                logCryEvent(loudSince, totalDurationMs, peakDbInPeriod)
+                            }
                             loudSince = -1L
+                            peakDbInPeriod = 0.0
                             MonitorState.statusText.value = "מאזין בבטחה ברקע..."
                         }
                     }
@@ -148,6 +169,21 @@ class MonitorService : Service() {
                 audioRecord.stop()
                 audioRecord.release()
             }
+        }
+    }
+
+    private suspend fun logCryEvent(startedAt: Long, durationMs: Long, peakDb: Double) {
+        val sid = sessionId ?: return
+        withContext(Dispatchers.IO) {
+            HistoryRepository.addCryEvent(
+                applicationContext,
+                sid,
+                CryEvent(
+                    timestamp = startedAt,
+                    durationSec = (durationMs / 1000).toInt().coerceAtLeast(1),
+                    peakDb = peakDb.toInt()
+                )
+            )
         }
     }
 
@@ -183,6 +219,12 @@ class MonitorService : Service() {
 
     private fun stopMonitoring() {
         job?.cancel()
+        sessionId?.let { sid ->
+            serviceScope.launch(Dispatchers.IO) {
+                HistoryRepository.endSession(applicationContext, sid)
+            }
+        }
+        sessionId = null
         MonitorState.isRunning.value = false
         MonitorState.statusText.value = "ממתין להפעלה"
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -235,6 +277,12 @@ class MonitorService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         job?.cancel()
+        sessionId?.let { sid ->
+            CoroutineScope(Dispatchers.IO).launch {
+                HistoryRepository.endSession(applicationContext, sid)
+            }
+        }
+        sessionId = null
         MonitorState.isRunning.value = false
     }
 
